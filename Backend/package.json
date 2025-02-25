@@ -5,7 +5,8 @@
     "express": "^4.21.2",
     "mongoose": "^8.9.3",
     "zod": "^3.24.1"
-  },
+  "nanoid": "^4.0.0"
+  ,
   "devDependencies": {
     "@types/node": "^22.10.5",
     "typescript": "^5.7.2"

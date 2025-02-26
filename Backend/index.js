@@ -27,8 +27,20 @@ const quizSchema = new mongoose.Schema({
   questions: [{
     text: String,
     options: [String],
-    correctAnswer: Number,
-    marks: Number
+    correctAnswer: {
+      type: Number,
+      min: 0,
+      max: 3
+    },
+    marks: {
+      type: Number,
+      min: 1,
+      max: 10,
+      validate: {
+        validator: Number.isInteger,
+        message: 'Marks must be a whole number'
+      }
+    }
   }],
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
@@ -36,13 +48,16 @@ const quizSchema = new mongoose.Schema({
 
 const userResponseSchema = new mongoose.Schema({
   username: String,
-  quizId: { type: mongoose.Schema.Types.ObjectId, ref: 'Quiz' },
+  quizId: String,
   accessCode: String,
   responses: [{
     questionId: String,
     selectedOption: Number
   }],
-  score: Number,
+  score: {
+    type: Number,
+    min: 0
+  },
   completed: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 });
@@ -61,27 +76,17 @@ app.get('/api/admin/quizzes', async (req, res) => {
   try {
     const quizzes = await Quiz.find().sort({ createdAt: -1 });
     
-    // Get all responses for all quizzes
+    // Calculate statistics for each quiz
     const quizzesWithStats = await Promise.all(quizzes.map(async (quiz) => {
-      const responses = await UserResponse.find({ 
-        quizId: quiz._id,
-      }).select('username score completed createdAt').lean();
-
+      const responses = await UserResponse.find({ quizId: quiz._id, completed: true });
       const attempts = responses.length;
-      const completedResponses = responses.filter(r => r.completed);
-      const totalScore = completedResponses.reduce((sum, r) => sum + (r.score || 0), 0);
-      const averageScore = completedResponses.length > 0 
-        ? Math.round((totalScore / completedResponses.length) * 100) / 100 
-        : 0;
-
+      const totalScore = responses.reduce((sum, r) => sum + (r.score || 0), 0);
+      const averageScore = attempts > 0 ? Math.round((totalScore / attempts) * 100) / 100 : 0;
+      
       return {
         ...quiz.toObject(),
         attempts,
-        averageScore,
-        responses: responses.map(response => ({
-          ...response,
-          id: response._id.toString()
-        }))
+        averageScore
       };
     }));
 
@@ -93,6 +98,12 @@ app.get('/api/admin/quizzes', async (req, res) => {
 
 app.post('/api/admin/quizzes', async (req, res) => {
   try {
+    // Validate marks for each question
+    const invalidMarks = req.body.questions.some(q => !Number.isInteger(q.marks) || q.marks < 1 || q.marks > 10);
+    if (invalidMarks) {
+      return res.status(400).json({ error: 'Marks must be whole numbers between 1 and 10' });
+    }
+
     const quiz = new Quiz(req.body);
     await quiz.save();
     res.status(201).json(quiz);
@@ -103,10 +114,16 @@ app.post('/api/admin/quizzes', async (req, res) => {
 
 app.put('/api/admin/quizzes/:id', async (req, res) => {
   try {
+    // Validate marks for each question
+    const invalidMarks = req.body.questions.some(q => !Number.isInteger(q.marks) || q.marks < 1 || q.marks > 10);
+    if (invalidMarks) {
+      return res.status(400).json({ error: 'Marks must be whole numbers between 1 and 10' });
+    }
+
     const quiz = await Quiz.findByIdAndUpdate(
       req.params.id,
       { ...req.body, updatedAt: Date.now() },
-      { new: true }
+      { new: true, runValidators: true }
     );
     if (!quiz) {
       return res.status(404).json({ error: 'Quiz not found' });
@@ -172,6 +189,10 @@ app.post('/api/submit-answer', async (req, res) => {
       return res.status(404).json({ error: 'Quiz session not found' });
     }
 
+    // Remove any previous answer for this question
+    userResponse.responses = userResponse.responses.filter(r => r.questionId !== questionId);
+    
+    // Add the new answer
     userResponse.responses.push({ questionId, selectedOption });
     await userResponse.save();
     res.json({ success: true });
@@ -192,9 +213,10 @@ app.post('/api/submit-quiz', async (req, res) => {
     const quiz = await Quiz.findById(userResponse.quizId);
     let score = 0;
 
-    userResponse.responses.forEach(response => {
-      const question = quiz.questions.find(q => q._id.toString() === response.questionId);
-      if (question && question.correctAnswer === response.selectedOption) {
+    // Calculate score based on correct answers and their marks
+    quiz.questions.forEach((question, index) => {
+      const response = userResponse.responses.find(r => r.questionId === question._id.toString());
+      if (response && response.selectedOption === question.correctAnswer) {
         score += question.marks;
       }
     });
